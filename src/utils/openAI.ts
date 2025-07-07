@@ -1,14 +1,15 @@
 import { createParser, ParsedEvent, ReconnectInterval } from 'eventsource-parser'
 import type { ChatMessage } from '@/types'
 
-export const generatePayload = (apiKey: string, temperature :number, messages: ChatMessage[]): RequestInit => ({
+// 修改：增加 model 参数，使其更通用
+export const generatePayload = (apiKey: string, temperature :number, messages: ChatMessage[], model: string): RequestInit => ({
   headers: {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`,
   },
   method: 'POST',
   body: JSON.stringify({
-    model: 'deepseek-ai/DeepSeek-V3',
+    model: model, // 修改：使用传入的 model 参数
     messages,
     temperature: temperature,
     presence_penalty:1,
