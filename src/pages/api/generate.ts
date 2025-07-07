@@ -1,10 +1,20 @@
 import type { APIRoute } from 'astro'
 import { generatePayload, parseOpenAIStream } from '@/utils/openAI'
 import { verifySignature } from '@/utils/auth'
-const defaultAPIKey = import.meta.env.DEFAULT_API_KEY || '';
+const defaultSiliconflowAPIKey = import.meta.env.DEFAULT_API_KEY || ''; // 修改：变量名更明确
 import prompts from "@/prompts"
 
-const baseUrl = 'https://api.siliconflow.cn';
+// 新增：定义不同提供商的配置
+const PROVIDER_CONFIG = {
+  'siliconflow': {
+    baseUrl: 'https://api.siliconflow.cn/v1/chat/completions',
+    model: 'deepseek-ai/DeepSeek-V3',
+  },
+  '302ai': {
+    baseUrl: 'https://api.302.ai/v1/chat/completions',
+    model: 'deepseek-chat',
+  }
+};
 
 // cloudflare pages 不支持node方法，简单的粗算
 function countTokens(str: string) {
@@ -26,13 +36,23 @@ export const post: APIRoute = async (context) => {
     return new Response('No input text')
   }
 
-  // 优先使用用户提供的 API Key，如果没有则使用默认 API Key
-  let apiKey = setting.openaiAPIKey || defaultAPIKey;
-
-  // 如果既没有用户提供的 API Key 也没有默认 API Key，返回错误提示
-  if (!apiKey) {
-    return new Response("🙏 请看下方【告示】或联系管理员配置默认 API Key")
+  // --- 新增和修改的核心逻辑 ---
+  const provider = setting.modelProvider || 'siliconflow'; // 默认使用硅基流动
+  const config = PROVIDER_CONFIG[provider];
+  
+  let apiKey: string;
+  if (provider === '302ai') {
+    apiKey = setting.threeohtwoAPIKey;
+  } else {
+    // 默认或明确选择硅基流动时，使用其Key或Vercel上的默认Key
+    apiKey = setting.siliconflowAPIKey || defaultSiliconflowAPIKey;
   }
+  
+  if (!apiKey) {
+    const providerName = provider === '302ai' ? '302.AI' : '硅基流动';
+    return new Response(`🙏 请在“拈花”设置中配置 ${providerName} 的 API Key，或联系管理员。`);
+  }
+  // --- 核心逻辑结束 ---
 
   const prompt = prompts.find((item) => item.role == setting.role)?.prompt || setting.customRule;
   let reqMessages = [];
@@ -71,23 +91,26 @@ export const post: APIRoute = async (context) => {
     })
   }
 
-  const initOptions = generatePayload(apiKey, 0.8, reqMessages);
+  // 修改：传入动态的模型名称
+  const initOptions = generatePayload(apiKey, 0.8, reqMessages, config.model);
+  
   // @ts-ignore
   let response = new Response();
 
   try {
-    response = await fetch(`${baseUrl}/v1/chat/completions`, initOptions) as Response;
+    // 修改：使用动态的 baseUrl
+    response = await fetch(config.baseUrl, initOptions) as Response;
     if (response.status > 400) {
       // 专门处理余额不足或限额超出的错误
       if (response.status === 402 || response.statusText.includes('insufficient')) {
-        return new Response("🙏 默认 API Key 余额不足或被限制，请看下方【告示】")
+        return new Response("🙏 API Key 余额不足或被限制，请检查Key或看下方【告示】")
       } else if (response.status === 429) {
-        return new Response("🙏 当前系统负载过高或 API Key 限额已达上限，请看下方【告示】")
+        return new Response("🙏 当前系统负载过高或 API Key 限额已达上限，请稍后再试或看下方【告示】")
       }
       throw new Error(`${response.status}:${response.statusText}`);
     }
   } catch (error) {
-    return new Response(`🙏 当前请求量过多，请稍后重试，或看下方【告示】 ${error}`)
+    return new Response(`⚠️AI服务商响应错误 ${error}`)
   }
 
   return new Response(parseOpenAIStream(response))
