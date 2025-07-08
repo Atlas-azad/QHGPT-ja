@@ -12,7 +12,7 @@ const PROVIDER_CONFIG = {
   },
   '302ai': {
     baseUrl: 'https://api.302.ai/v1/chat/completions',
-    model: 'deepseek-chat',
+    model: 'deepseek-ai/DeepSeek-V3',
   }
 };
 
@@ -50,7 +50,7 @@ export const post: APIRoute = async (context) => {
   
   if (!apiKey) {
     const providerName = provider === '302ai' ? '302.AI' : '硅基流动';
-    return new Response(`🙏 请在“拈花”设置中配置 ${providerName} 的 API Key，或联系管理员。`);
+    return new Response(`🙏 请看下方告示，在“拈花”设置中配置 ${providerName} 的 API Key。`);
   }
   // --- 核心逻辑结束 ---
 
@@ -103,7 +103,7 @@ export const post: APIRoute = async (context) => {
     if (response.status > 400) {
       // 专门处理余额不足或限额超出的错误
       if (response.status === 402 || response.statusText.includes('insufficient')) {
-        return new Response("🙏 API Key 余额不足或被限制，请检查Key或看下方【告示】")
+        return new Response("🙏 API Key 余额不足或被限制，请检查您的 API Key")
       } else if (response.status === 429) {
         return new Response("🙏 当前系统负载过高或 API Key 限额已达上限，请稍后再试或看下方【告示】")
       }
