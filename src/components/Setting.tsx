@@ -14,7 +14,7 @@ type ModelProvider = 'siliconflow' | '302ai';
 // 修改：扩展 Setting 类型
 interface Setting {
   modelProvider: ModelProvider; // 新增：模型提供商
-  siliconflowAPIKey: string;   // 修改：原 openaiAPIKey，更名使其清晰
+  siliconflowAPIKey: string;   
   threeohtwoAPIKey: string;    // 新增：302.AI 的 API Key
   customRule: string;
   openaiAPITemperature: number;
@@ -51,7 +51,7 @@ export default function Setting(props: {
       <hr class="mt-2 bg-slate-5 bg-op-15 border-none h-1px"></hr>
       <Show when={shown()}>
         {/* 新增：模型提供商选择器 */}
-        <SettingItem icon="i-carbon:cloud-service-management" label="模型来源">
+        <SettingItem icon="i-carbon:cloud-service-management" label="模型（请看下方【告示】说明）">
           <div class="flex items-center space-x-2">
             <label class="flex items-center cursor-pointer">
               <input 
@@ -81,7 +81,7 @@ export default function Setting(props: {
           <SettingItem icon="i-carbon:api" label="硅基流动 Key">
             <input
               type="password"
-              placeholder="请看下方【告示】说明"
+              placeholder="在此输入硅基流动的API Key"
               value={props.setting().siliconflowAPIKey}
               class="max-w-200px ml-1em px-1 text-slate rounded-sm bg-slate bg-op-15 focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:text-slate-400 placeholder:op-30"
               onInput={e => {
@@ -97,7 +97,7 @@ export default function Setting(props: {
           <SettingItem icon="i-carbon:api" label="302.AI Key">
             <input
               type="password"
-              placeholder="在此输入 302.AI 的 Key"
+              placeholder="在此输入302.AI的API Key"
               value={props.setting().threeohtwoAPIKey}
               class="max-w-200px ml-1em px-1 text-slate rounded-sm bg-slate bg-op-15 focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:text-slate-400 placeholder:op-30"
               onInput={e => {
