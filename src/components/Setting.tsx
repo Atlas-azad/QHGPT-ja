@@ -13,9 +13,14 @@ type ModelProvider = 'siliconflow' | '302ai';
 
 // 修改：扩展 Setting 类型
 interface Setting {
-  modelProvider: ModelProvider; // 新增：模型提供商
-  siliconflowAPIKey: string;   
-  threeohtwoAPIKey: string;    // 新增：302.AI 的 API Key
+  // 这两个字段可能在老用户的 localStorage 中不存在
+  modelProvider?: ModelProvider;
+  siliconflowAPIKey?: string;
+  threeohtwoAPIKey?: string;
+  
+  // 这个字段可能以旧名字存在
+  openaiAPIKey?: string; // 兼容老数据
+
   customRule: string;
   openaiAPITemperature: number;
   roleAvatar?: string;
@@ -35,6 +40,14 @@ export default function Setting(props: {
     });
   };
   
+  // ★★★ 核心修复逻辑 ★★★
+  // 如果 modelProvider 未定义，则默认为 'siliconflow'
+  const currentProvider = () => props.setting().modelProvider || 'siliconflow';
+  
+  // 智能获取 key，兼容旧的 openaiAPIKey，并确保永不为 undefined
+  const siliconflowKey = () => props.setting().siliconflowAPIKey || props.setting().openaiAPIKey || '';
+  const threeohtwoKey = () => props.setting().threeohtwoAPIKey || '';
+
   return (
     <div class="text-sm text-slate mb-2">
       <div class="mt-2 flex items-center justify-between">
@@ -51,13 +64,13 @@ export default function Setting(props: {
       <hr class="mt-2 bg-slate-5 bg-op-15 border-none h-1px"></hr>
       <Show when={shown()}>
         {/* 新增：模型提供商选择器 */}
-        <SettingItem icon="i-carbon:cloud-service-management" label="模型（请看下方【告示】说明）">
+        <SettingItem icon="i-carbon:cloud-service-management" label="模型来源">
           <div class="flex items-center space-x-2">
             <label class="flex items-center cursor-pointer">
               <input 
                 type="radio" 
                 name="modelProvider" 
-                checked={props.setting().modelProvider === 'siliconflow'} 
+                checked={currentProvider() === 'siliconflow'} // ★ 修复 ★
                 onChange={() => handleProviderChange('siliconflow')}
                 class="form-radio h-4 w-4 text-blue-600"
               />
@@ -67,7 +80,7 @@ export default function Setting(props: {
               <input 
                 type="radio" 
                 name="modelProvider" 
-                checked={props.setting().modelProvider === '302ai'} 
+                checked={currentProvider() === '302ai'} // ★ 修复 ★
                 onChange={() => handleProviderChange('302ai')}
                 class="form-radio h-4 w-4 text-blue-600"
               />
@@ -77,28 +90,30 @@ export default function Setting(props: {
         </SettingItem>
 
         {/* 修改：根据选择显示不同的 API Key 输入框 */}
-        <Show when={props.setting().modelProvider === 'siliconflow'}>
+        <Show when={currentProvider() === 'siliconflow'}>
           <SettingItem icon="i-carbon:api" label="硅基流动 Key">
             <input
               type="password"
-              placeholder="在此输入硅基流动的API Key"
-              value={props.setting().siliconflowAPIKey}
+              placeholder="请看下方【告示】说明"
+              value={siliconflowKey()} // ★ 修复 ★
               class="max-w-200px ml-1em px-1 text-slate rounded-sm bg-slate bg-op-15 focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:text-slate-400 placeholder:op-30"
               onInput={e => {
+                const newKey = (e.target as HTMLInputElement).value;
                 props.setSetting({
                   ...props.setting(),
-                  siliconflowAPIKey: (e.target as HTMLInputElement).value
+                  siliconflowAPIKey: newKey,
+                  openaiAPIKey: undefined // 清理旧字段
                 })
               }}
             />
           </SettingItem>
         </Show>
-        <Show when={props.setting().modelProvider === '302ai'}>
+        <Show when={currentProvider() === '302ai'}>
           <SettingItem icon="i-carbon:api" label="302.AI Key">
             <input
               type="password"
-              placeholder="在此输入302.AI的API Key"
-              value={props.setting().threeohtwoAPIKey}
+              placeholder="在此输入 302.AI 的 Key"
+              value={threeohtwoKey()} // ★ 修复 ★
               class="max-w-200px ml-1em px-1 text-slate rounded-sm bg-slate bg-op-15 focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:text-slate-400 placeholder:op-30"
               onInput={e => {
                 props.setSetting({
@@ -113,7 +128,7 @@ export default function Setting(props: {
         <SettingItem icon="i-carbon:user-online" label="自定义角色">
           <input
             type="text"
-            value={props.setting().customRule}
+            value={props.setting().customRule || ''} // ★ 修复 ★
             class="text-ellipsis  max-w-200px ml-1em px-1 text-slate rounded-sm bg-slate bg-op-15 focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:text-slate-400 placeholder:op-30"
             onInput={e => {
               props.setSetting({
