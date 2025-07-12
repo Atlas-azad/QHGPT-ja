@@ -1,5 +1,5 @@
 import type { ChatMessage } from '@/types';
-import { createSignal, Index, Show, createEffect, onMount, For, batch } from 'solid-js';
+import { createSignal, createEffect, onMount, For, Index, Show } from 'solid-js';
 import IconClear from './icons/Clear';
 import IconMarkdown from './icons/Markdown';
 import MessageItem from './MessageItem';
@@ -24,77 +24,70 @@ type ChatHistory = Record<string, ChatMessage[]>;
 export default () => {
   let inputRef: HTMLTextAreaElement;
   let messagesContainerRef: HTMLDivElement;
-  const [messageList, setMessageList] = createSignal<ChatMessage[]>([]);
+
+  // [V4 MAJOR REFACTOR] 核心状态管理：单一数据源 (Single Source of Truth)
+  // 这个 chatHistory 是整个应用所有聊天记录的唯一真相
+  const [chatHistory, setChatHistory] = createSignal<ChatHistory>({});
+  const [currentRole, setCurrentRole] = createSignal<Role | null>(null);
+  const [roles, setRoles] = createSignal<Role[]>([]);
+  
+  // [V4 REFACTOR] 派生状态：当前消息列表只是 chatHistory 的一个“视图”或“镜像”
+  // 它会自动根据 currentRole() 的变化而变化，永远不会与数据源脱节
+  const messageList = (): ChatMessage[] => {
+    const roleName = currentRole()?.role;
+    if (!roleName) return [];
+    return chatHistory()[roleName] || [];
+  };
+
   const [currentAssistantMessage, setCurrentAssistantMessage] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const [controller, setController] = createSignal<AbortController>(null);
-  const [currentRole, setCurrentRole] = createSignal<Role | null>(null);
-  const [roles, setRoles] = createSignal<Role[]>([]);
-  const [isInitialized, setIsInitialized] = createSignal(false); // 新增初始化状态锁，防止早期误操作
-
+  
   const defaultSetting = {
     openaiAPIKey: "",
     customRule: "",
     openaiAPITemperature: 70,
   };
+  const [setting, setSetting] = createSignal({ ...defaultSetting });
 
-  const [setting, setSetting] = createSignal({
-    ...defaultSetting
+  // [V4 MAJOR REFACTOR] 统一的、自动的保存机制
+  // 只有一个地方负责保存！chatHistory 只要有任何变动，就自动将其完整写入 localStorage
+  createEffect(() => {
+    const history = chatHistory();
+    // 只有在 history 不为空时才执行保存，防止意外清空
+    if (Object.keys(history).length > 0) {
+      localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
+    }
   });
   
-  // 从 localStorage 获取所有历史记录
-  const getHistory = (): ChatHistory => {
-    const history = localStorage.getItem(CHAT_HISTORY_KEY);
-    try {
-      return history ? JSON.parse(history) : {};
-    } catch {
-      return {};
-    }
-  };
-
-  // 保存当前角色历史记录
-  const saveHistory = (roleName: string, messages: ChatMessage[]) => {
-    if (!roleName) return;
-    const history = getHistory();
-    history[roleName] = messages;
-    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
-  };
-  
-  // 组件挂载时，加载所有数据和设置
   onMount(async () => {
     // 加载用户设置
     const storage = localStorage.getItem("setting");
     try {
-      if (storage) {
-        setSetting({ ...defaultSetting, ...JSON.parse(storage) });
-      }
-    } catch {
-      console.log("Setting parse error");
-    }
+      if (storage) setSetting({ ...defaultSetting, ...JSON.parse(storage) });
+    } catch { console.log("Setting parse error"); }
 
+    // [V4 REFACTOR] 从 localStorage 加载一次完整的历史记录到单一数据源
+    const storedHistory = localStorage.getItem(CHAT_HISTORY_KEY);
+    try {
+      if (storedHistory) {
+        setChatHistory(JSON.parse(storedHistory));
+      }
+    } catch { console.log("History parse error") }
+    
     // 获取角色列表
     const response = await fetch('/api/generate');
     const loadedRoles: Role[] = await response.json();
     setRoles(loadedRoles);
-
-    // [V3 核心修正] 初始化时，仅加载并选中第一个角色，后续逻辑由 choiceRole 统一处理
-    if (loadedRoles.length > 0) {
-      // 默认选择第一个角色，但让 choiceRole 函数来处理消息加载
-      choiceRole(loadedRoles[0], true);
-    }
     
-    // 解开初始化锁，允许UI交互
-    setIsInitialized(true);
+    if (loadedRoles.length > 0) {
+      // 初始化时，默认选中第一个角色
+      choiceRole(loadedRoles[0]);
+    }
   });
 
-  // 保存用户设置的 Effect
   createEffect(() => {
-    localStorage.setItem("setting", JSON.stringify(setting()));
-  });
-
-  // Swiper 初始化的 Effect
-  createEffect(() => {
-    if (isInitialized()) {
+    if (roles().length > 0) {
       new Swiper('.swiper', {
         slidesPerView: "auto",
         autoplay: false,
@@ -111,41 +104,40 @@ export default () => {
     }
   });
 
-  // 用户点击发送按钮
+  // [V4 REFACTOR] 所有修改消息的操作，现在都只修改 chatHistory
+  const modifyHistoryForCurrentRole = (updateFn: (prev: ChatMessage[]) => ChatMessage[]) => {
+    const roleName = currentRole()?.role;
+    if (!roleName) return;
+    
+    setChatHistory(prev => ({
+      ...prev,
+      [roleName]: updateFn(prev[roleName] || [])
+    }));
+  };
+  
   const handleButtonClick = async () => {
     const inputValue = inputRef.value;
-    if (!inputValue || !currentRole()) return;
+    const role = currentRole();
+    if (!inputValue || !role) return;
 
-    const updatedMessages = [...messageList(), { role: 'user' as const, content: inputValue }];
-    setMessageList(updatedMessages);
-    saveHistory(currentRole()!.role, updatedMessages); // 精准保存
-    
     inputRef.value = '';
+    modifyHistoryForCurrentRole(prev => [...prev, { role: 'user', content: inputValue }]);
     requestWithLatestMessage();
   };
-
-  // 请求API
+  
   const requestWithLatestMessage = async () => {
     setLoading(true);
     setCurrentAssistantMessage('');
     const role = currentRole();
-    if (!role) {
-      setLoading(false);
-      return;
-    }
-    
+    if (!role) { setLoading(false); return; }
+
     try {
       const controller = new AbortController();
       setController(controller);
       let requestMessageList = [...messageList()];
-      // 过滤和截断逻辑...
-      if (requestMessageList[0].role == 'assistant') {
-        requestMessageList = requestMessageList.slice(1);
-      }
+      if (requestMessageList[0].role == 'assistant') { requestMessageList = requestMessageList.slice(1); }
       requestMessageList = requestMessageList.filter((item) => !item.content.includes('⚠️'));
-      if (requestMessageList.length > 15) {
-        requestMessageList = [...requestMessageList.slice(0, 3), ...requestMessageList.slice(-12)];
-      }
+      if (requestMessageList.length > 15) { requestMessageList = [...requestMessageList.slice(0, 3), ...requestMessageList.slice(-12)]; }
 
       const timestamp = Date.now();
       const response = await fetch('/api/generate', {
@@ -157,6 +149,7 @@ export default () => {
         }),
         signal: controller.signal,
       });
+
       if (!response.ok) throw new Error(response.statusText);
       const data = response.body;
       if (!data) throw new Error('No data');
@@ -184,97 +177,61 @@ export default () => {
     archiveCurrentMessage();
   };
 
-  // 归档AI的回复
   const archiveCurrentMessage = () => {
     if (currentAssistantMessage()) {
-      const updatedMessages = [...messageList(), { role: 'assistant' as const, content: currentAssistantMessage() }];
-      setMessageList(updatedMessages);
-      saveHistory(currentRole()!.role, updatedMessages); // 精准保存
-
+      modifyHistoryForCurrentRole(prev => [...prev, { role: 'assistant', content: currentAssistantMessage() }]);
       setCurrentAssistantMessage('');
       setLoading(false);
       setController(null);
-      if (inputRef) {
-        inputRef.focus();
-      }
+      if (inputRef) inputRef.focus();
     }
   };
 
-  // 清除当前对话
-  const clear = () => {
-    const role = currentRole();
-    if (!role) return;
-    
-    // [V3 核心修正] 保证清除后显示正确的欢迎语并保存
-    const initialMessages = [{ role: 'assistant' as const, content: role.fc }];
-    setMessageList(initialMessages);
-    saveHistory(role.role, initialMessages); // 精准保存
-    
-    setCurrentAssistantMessage('');
-    inputRef.value = '';
-    inputRef.style.height = 'auto';
-  };
-
-  // 停止流式响应
   const stopStreamFetch = () => {
     if (controller()) {
       controller().abort();
       archiveCurrentMessage();
     }
   };
-
-  // [V3 核心改造] 切换角色函数，使用batch解决竞态条件
-  const choiceRole = (newRole: Role, isInitialCall = false) => {
-    const current = currentRole();
-    // 阻止非初始化时的重复点击
-    if (!isInitialCall && current && current.role === newRole.role) {
-      return;
-    }
-
-    const history = getHistory();
-    const newRoleHistory = history[newRole.role];
-    let messagesToSet: ChatMessage[];
-
-    if (newRoleHistory && newRoleHistory.length > 0) {
-      messagesToSet = newRoleHistory;
-    } else {
-      // [V3 核心修正] 只有在确认没有历史时，才创建并保存欢迎语，这彻底解决了欢迎语错乱问题
-      messagesToSet = [{ role: 'assistant' as const, content: newRole.fc }];
-      saveHistory(newRole.role, messagesToSet);
-    }
-
-    // [V3 核心修正] 使用 batch 原子化更新，保证角色状态和消息列表同步，杜绝界面错乱
-    batch(() => {
-      setCurrentRole(newRole);
-      setMessageList(messagesToSet);
-      setCurrentAssistantMessage('');
-    });
-    
+  
+  const clear = () => {
+    const role = currentRole();
+    if (!role) return;
+    modifyHistoryForCurrentRole(() => [{ role: 'assistant', content: role.fc }]);
+    setCurrentAssistantMessage('');
     if (inputRef) {
-        inputRef.focus();
+        inputRef.value = '';
+        inputRef.style.height = 'auto';
     }
   };
 
-  // 重试最后一次提问
+  const choiceRole = (newRole: Role) => {
+    if (!chatHistory()[newRole.role]) {
+      setChatHistory(prev => ({
+        ...prev,
+        [newRole.role]: [{ role: 'assistant', content: newRole.fc }]
+      }));
+    }
+    setCurrentRole(newRole);
+    if(inputRef) inputRef.focus();
+  };
+
   const retryLastFetch = () => {
-    if (messageList().length > 0) {
-      const lastMessage = messageList()[messageList().length - 1];
-      if (lastMessage.role === 'assistant') {
-        const truncatedMessages = messageList().slice(0, -1);
-        setMessageList(truncatedMessages);
-        saveHistory(currentRole()!.role, truncatedMessages); // 精准保存
-        requestWithLatestMessage();
-      }
-    }
+    modifyHistoryForCurrentRole(prev => {
+        const lastMessage = prev[prev.length - 1];
+        if (lastMessage?.role === 'assistant') {
+            requestWithLatestMessage();
+            return prev.slice(0, -1);
+        }
+        return prev;
+    });
   };
 
-  // 监听回车键
   const handleKeydown = (e: KeyboardEvent) => {
     if (e.isComposing || e.shiftKey) return;
     if (e.key === 'Enter') handleButtonClick();
   };
 
-  // 导出Markdown
   const exportToMarkdown = () => {
     const roleName = currentRole()?.role || "AI";
     const markdownLines = messageList().map(message => {
@@ -308,9 +265,7 @@ export default () => {
                     <img src={item.avatar} alt={item.role} class="avatar" />
                   </div>
                   <div class="info-wrapper">
-                    <h3 class="title">
-                      <span class="scope">{item.role}</span>
-                    </h3>
+                    <h3 class="title"><span class="scope">{item.role}</span></h3>
                   </div>
                 </div>
               )}
@@ -322,7 +277,7 @@ export default () => {
       </div>
     
       <Show when={currentRole()}>
-        <div ref={messagesContainerRef}>
+        <div ref={messagesContainerRef} class="px-1_5rem">
           <Index each={messageList()}>
             {(message, index) => (
               <MessageItem
@@ -334,7 +289,6 @@ export default () => {
               />
             )}
           </Index>
-
           {currentAssistantMessage() && (
             <MessageItem
               role="assistant"
@@ -344,7 +298,7 @@ export default () => {
           )}
         </div>
       </Show>
-
+      
       <Show
         when={!loading()}
         fallback={() => (
