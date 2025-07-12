@@ -3,18 +3,30 @@ import Layout from "../layouts/Layout.astro";
 import Header from "../components/Header.astro";
 import Footer from "../components/Footer.astro";
 import Generator from "../components/Generator";
+// ↓↓↓↓ 【V5.1 最终修正】: 根据您的目录树，使用正确的路径导入prompts！ ↓↓↓↓
+import prompts from "../prompts.ts";
 import "../message.css";
 import "../swiper.css"
 import "highlight.js/styles/atom-one-dark.css";
-import Swiper from 'swiper';
-  // import Swiper styles
-import 'swiper/css';
+
+// 在服务器端提前准备好角色列表
+const roles = prompts.filter((item) => {
+  return !!item.enabled;
+}).map((item) => {
+  return {
+    ...item,
+    // 出于安全和数据最小化原则，不把庞大的 prompt 文本发送到客户端
+    prompt: '' 
+  };
+});
 ---
 
 <Layout title="却惑几菩提">
   <main>
     <Header />
-    <Generator client:only="solid-js" />
+    {/* 将准备好的 roles 数据，通过 props 属性传递给客户端组件 */}
+    {/* client:only="solid-js" 确保组件只在客户端渲染，避免所有状态混乱问题 */}
+    <Generator client:only="solid-js" roles={roles} />
     <Footer />
   </main>
 </Layout>
