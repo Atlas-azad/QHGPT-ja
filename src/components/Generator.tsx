@@ -44,16 +44,11 @@ export default () => {
   const [currentRole, setCurrentRole] = createSignal<Role | null>(null);
   const [roles, setRoles] = createSignal<Role[]>([]);
   
-  // ===================================================================
-  // 老板，这是新策略的核心：我们需要一个变量来存放 Swiper 的实例！
-  // 这样我们才能对它发号施令。
-  // ===================================================================
   const [swiperInstance, setSwiperInstance] = createSignal<SwiperClass | null>(null);
 
   const defaultSetting = { openaiAPIKey: "", customRule: "", openaiAPITemperature: 70 };
   const [setting, setSetting] = createSignal({ ...defaultSetting });
 
-  // onMount 只负责初始化，包括 Swiper 的初始化
   onMount(async () => {
     const storage = localStorage.getItem("setting");
     try { if (storage) setSetting({ ...defaultSetting, ...JSON.parse(storage) }); }
@@ -63,63 +58,45 @@ export default () => {
     const fetchedRoles: Role[] = await response.json();
     setRoles(fetchedRoles);
     
-    // 初始化Swiper实例
     const swiper = new Swiper(swiperElRef, {
       slidesPerView: "auto",
       direction: 'horizontal',
       grabCursor: true,
       navigation: { nextEl: '.swiper-button-next', prevEl: '.swiper-button-prev' },
-      // ===================================================================
-      // 老板，这是解决方案的灵魂：统一事件处理流程！
-      // 我们只监听 Swiper 官方的 `slideChange` 事件。
-      // ===================================================================
       on: {
         slideChange: (s) => {
-          // Swiper 会告诉我们当前激活的是第几个滑块
           const newRole = roles()[s.activeIndex];
           if (newRole && newRole.role !== currentRole()?.role) {
-            // 当滑动结束后，我们才调用核心的切换逻辑
             handleRoleChange(newRole);
           }
         },
       },
     });
-    setSwiperInstance(swiper); // 保存Swiper实例，以便后续控制
+    setSwiperInstance(swiper);
 
-    // 初始化默认角色和对话
     if (fetchedRoles.length > 0) {
       const history = loadChatHistory();
       const initialRole = fetchedRoles[0];
-      // 直接调用我们的核心切换逻辑来初始化第一个角色
       handleRoleChange(initialRole, history);
     }
   });
 
-  // 保存设置的effect保持不变
   createEffect(() => { localStorage.setItem("setting", JSON.stringify(setting())); });
 
-  // 统一的保存函数
   const saveCurrentMessages = (roleToSave: Role, messagesToSave: ChatMessage[]) => {
     const history = loadChatHistory();
     history[roleToSave.role] = structuredClone(messagesToSave);
     saveChatHistory(history);
   };
 
-  // ===================================================================
-  // 老板，这是重构后最核心的函数，负责处理所有角色切换的逻辑。
-  // 它现在是唯一的逻辑入口，确保了操作的原子性和顺序性。
-  // ===================================================================
   const handleRoleChange = (newRole: Role, initialHistory?: Record<string, ChatMessage[]>) => {
-    // 1. 【保存旧状态】
     const oldRole = currentRole();
     if (oldRole && oldRole.role !== newRole.role) {
       saveCurrentMessages(oldRole, messageList());
     }
 
-    // 2. 【切换角色】更新当前角色状态
     setCurrentRole(newRole);
 
-    // 3. 【加载新状态】
     const history = initialHistory || loadChatHistory();
     const newRoleHistory = history[newRole.role];
 
@@ -128,23 +105,17 @@ export default () => {
     } else {
       const welcomeMessage = { role: 'assistant' as const, content: newRole.fc };
       setMessageList([welcomeMessage]);
-      // 立即为这个新角色保存初始对话状态
       const newHistory = loadChatHistory();
       newHistory[newRole.role] = [welcomeMessage];
       saveChatHistory(newHistory);
     }
 
-    // 重置UI状态
     setCurrentAssistantMessage('');
     setLoading(false);
     controller()?.abort();
     setController(null);
   };
   
-  // ===================================================================
-  // 老板，请看，原来的 onClick 事件现在只做一件事：
-  // 告诉 Swiper 滑动到指定位置。后续的逻辑将由 `slideChange` 事件接管。
-  // ===================================================================
   const onRoleClick = (role: Role, index: number) => {
     if (role.role !== currentRole()?.role) {
       swiperInstance()?.slideTo(index);
@@ -159,7 +130,7 @@ export default () => {
     const userMessage: ChatMessage = { role: 'user', content: inputValue };
     const newMessages = [...messageList(), userMessage];
     setMessageList(newMessages);
-    saveCurrentMessages(role, newMessages); // 发送后立即保存
+    saveCurrentMessages(role, newMessages);
     inputRef.value = '';
     requestWithLatestMessage();
   };
@@ -170,7 +141,7 @@ export default () => {
       const newAssistantMessage: ChatMessage = { role: 'assistant', content: currentAssistantMessage() };
       const newMessages = [...messageList(), newAssistantMessage];
       setMessageList(newMessages);
-      saveCurrentMessages(role, newMessages); // AI 回复完成后立即保存
+      saveCurrentMessages(role, newMessages);
 
       setCurrentAssistantMessage('');
       setLoading(false);
@@ -189,12 +160,9 @@ export default () => {
     const welcomeMessage: ChatMessage = { role: 'assistant', content: role.fc };
     setMessageList([welcomeMessage]);
     setCurrentAssistantMessage('');
-    saveCurrentMessages(role, [welcomeMessage]); // 清空就是重置为欢迎语并保存
+    saveCurrentMessages(role, [welcomeMessage]);
   };
 
-  // 其余所有函数(requestWithLatestMessage, stopStreamFetch, retryLastFetch, handleKeydown, exportToMarkdown)
-  // 逻辑都无需改动，我将它们折叠起来，以突出重点。
-  // ... [The rest of the functions remain the same as the previous correct version]
   const requestWithLatestMessage = async () => {
     if (!currentRole()) return;
     setLoading(true);
@@ -202,8 +170,7 @@ export default () => {
     try {
       const controller = new AbortController();
       setController(controller);
-      let requestMessageList = structuredClone(messageList()); // 使用克隆数据来发送请求
-      // 去掉初始的欢迎语
+      let requestMessageList = structuredClone(messageList());
       const initialWelcome = (roles().find(r => r.role === currentRole()!.role))?.fc;
       if (requestMessageList.length > 0 && requestMessageList[0].role === 'assistant' && requestMessageList[0].content === initialWelcome) {
         requestMessageList.shift();
@@ -248,12 +215,14 @@ export default () => {
         }
     }
   };
+
   const stopStreamFetch = () => {
     if (controller()) {
       controller()?.abort();
-      archiveCurrentMessage(); // 保存已收到的部分
+      archiveCurrentMessage();
     }
   };
+
   const retryLastFetch = () => {
     const role = currentRole();
     if (messageList().length > 0 && role) {
@@ -261,11 +230,12 @@ export default () => {
       if (lastMessage.role === 'assistant') {
         const newMessages = messageList().slice(0, -1);
         setMessageList(newMessages);
-        saveCurrentMessages(role, newMessages); // 重试前同样要保存状态
+        saveCurrentMessages(role, newMessages);
         requestWithLatestMessage();
       }
     }
   };
+
   const handleKeydown = (e: KeyboardEvent) => {
     if (e.isComposing || e.shiftKey) return;
     if (e.key === 'Enter') {
@@ -273,6 +243,7 @@ export default () => {
       handleButtonClick();
     }
   };
+
   const exportToMarkdown = () => {
     const role = currentRole();
     if (!role || messageList().length === 0) return;
@@ -293,18 +264,13 @@ export default () => {
   
   return (
     <div my-6>
-      {/* =================================================================== */}
-      {/* 老板，这里的HTML结构也做了微调，以配合新的Swiper初始化方式 */}
-      {/* =================================================================== */}
       <div ref={swiperElRef!} class="swiper">
         <div class="swiper-wrapper">
           <For each={roles()} fallback={<div>请深呼吸等待...</div>}>
             {(item, index) => (
               <div
                 class="swiper-slide"
-                // classList 依然保留，用于视觉上的即时反馈
                 classList={{ selected: currentRole()?.role === item.role }}
-                // onClick 现在只负责调用新的、安全的处理函数
                 onClick={() => onRoleClick(item, index())}
                 data-role={item.role}
               >
@@ -318,7 +284,6 @@ export default () => {
         <div class="swiper-button-next"></div>
       </div>
 
-      {/* 下面的JSX模板完全不需要改动，它们现在能稳定地接收到正确的状态 */}
       <div ref={messagesContainerRef}>
         <Index each={messageList()}>
           {(message, index) => (
@@ -335,14 +300,25 @@ export default () => {
           <MessageItem role="assistant" assistantAvatar={currentRole()?.avatar ?? ""} message={currentAssistantMessage} />
         )}
       </div>
-      <Show when={!loading()} fallback={/* ... */}>
-        {/* ... [Rest of the JSX is identical to previous version] ... */}
+
+      {/* =================================================================== */}
+      {/* 老板，我已将这部分代码恢复到正确的、未经删改的状态 */}
+      {/* =================================================================== */}
+      <Show
+        when={!loading()}
+        fallback={() => (
+          <div class="h-12 my-4 flex gap-4 items-center justify-center bg-slate bg-op-15 rounded-sm">
+            <span>请保持平和与欢喜...</span>
+            <div class="px-2 py-0.5 border border-slate rounded-md text-sm op-70 cursor-pointer hover:bg-slate/10" onClick={stopStreamFetch}>唵</div>
+          </div>
+        )}
+      >
         <div class="my-4 flex items-center gap-2 transition-opacity">
           <button title="清空当前对话" onClick={clear} class="h-12 px-2 py-2 bg-slate bg-op-15 rounded-lg hover:bg-slate-50 transition-all duration-200"> <IconClear /> </button>
           <textarea
             ref={inputRef!}
             onKeyDown={handleKeydown}
-            placeholder={currentRole() ? `与 ${currentRole()?.role} 对话...` : "点击头像开启对话"}
+            placeholder={currentRole() ? `与 ${currentRole()?.role} 对话...` : "点击上方头像开启对话"}
             autocomplete="off"
             onInput={() => { inputRef.style.height = 'auto'; inputRef.style.height = `${inputRef.scrollHeight}px`; }}
             rows="1"
@@ -356,7 +332,9 @@ export default () => {
           </button>
         </div>
       </Show>
+      
       <Setting setting={setting} setSetting={setSetting} />
     </div>
   );
 };
+
