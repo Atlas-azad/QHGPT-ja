@@ -18,7 +18,11 @@ export interface Role {
   fc: string;
 }
 
-// 老板请注意：我们不再需要之前的 Map 缓存了，因为它无法持久化。
+// [新增] 定义一个统一的localstorage键，避免污染
+const CHAT_HISTORY_KEY = 'ai_buddha_chat_history';
+
+// [新增] 定义聊天历史的类型结构
+type ChatHistory = Record<string, ChatMessage[]>;
 
 export default () => {
   let inputRef: HTMLTextAreaElement;
@@ -27,9 +31,9 @@ export default () => {
   const [currentAssistantMessage, setCurrentAssistantMessage] = createSignal('');
   const [loading, setLoading] = createSignal(false);
   const [controller, setController] = createSignal<AbortController>(null);
-  const [currentRole, setCurrentRole] = createSignal<Role>({ role: '', avatar: '', fc: '' });
+  const [currentRole, setCurrentRole] = createSignal<Role | null>(null); // [修改] 初始值设为null，确保能触发加载
   const [roles, setRoles] = createSignal<Role[]>([]);
-  
+
   const defaultSetting = {
     openaiAPIKey: "",
     customRule: "",
@@ -40,61 +44,97 @@ export default () => {
     ...defaultSetting
   });
 
-  // 获取历史配置
+  // [新增] 封装一个从 localStorage 获取所有历史记录的函数
+  const getHistory = (): ChatHistory => {
+    const history = localStorage.getItem(CHAT_HISTORY_KEY);
+    try {
+      return history ? JSON.parse(history) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  // [新增] 封装一个保存当前角色历史记录的函数
+  const saveHistory = (roleName: string, messages: ChatMessage[]) => {
+    if (!roleName) return;
+    const history = getHistory();
+    history[roleName] = messages;
+    localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
+  };
+  
+  // 组件挂载时执行初始化操作
   onMount(async () => {
+    // 加载设置
     const storage = localStorage.getItem("setting");
     try {
       if (storage) {
-        const parsed = JSON.parse(storage);
-        setSetting({
-          ...defaultSetting,
-          ...parsed
-        });
+        setSetting({ ...defaultSetting, ...JSON.parse(storage) });
       }
     } catch {
       console.log("Setting parse error");
     }
+
+    // 加载AI角色列表
     const response = await fetch('/api/generate');
-    let roles = await response.json();
-    setRoles([...roles]);
+    const loadedRoles: Role[] = await response.json();
+    setRoles(loadedRoles);
+
+    // [修改] 初始化角色和聊天记录
+    if (loadedRoles.length > 0) {
+      const initialRole = loadedRoles[0];
+      setCurrentRole(initialRole); // 设置默认角色
+      const history = getHistory();
+      const roleHistory = history[initialRole.role];
+      if (roleHistory && roleHistory.length > 0) {
+        setMessageList(roleHistory);
+      } else {
+        // 如果没有历史记录，显示初始欢迎语
+        setMessageList([{ role: 'assistant', content: initialRole.fc }]);
+      }
+    }
   });
 
-  // 保存历史配置
+  // 保存用户设置
   createEffect(() => {
     localStorage.setItem("setting", JSON.stringify(setting()));
   });
 
-  // =====================================================================
-  // ================= 老板，这里是“自动保存”到永久笔记的功能 =================
-  // 当聊天记录(messageList)或当前角色(currentRole)变化时，自动保存。
-  // 我保留了之前那位程序员写的这部分，因为它本身是正确的！
+  // [修改] 保存当前角色的消息, currentRole 和 messageList 变化时触发
   createEffect(() => {
-    const roleName = currentRole().role;
-    if (roleName) {
-      localStorage.setItem(roleName, JSON.stringify(messageList()));
+    const role = currentRole();
+    if (role) {
+      saveHistory(role.role, messageList());
     }
   });
-  // =====================================================================
+
 
   createEffect(() => {
-    const swiper = new Swiper('.swiper', {
-      slidesPerView: "auto",
-      autoplay: false,
-      direction: 'horizontal',
-      grabCursor: true,
-      observer: true,
-      observeParents: true,
-      parallax: true,
-      navigation: {
-        nextEl: '.swiper-button-next',
-        prevEl: '.swiper-button-prev',
-      },
-    });
+    // Swiper初始化逻辑保持不变
+    if(roles().length > 0) {
+      const swiper = new Swiper('.swiper', {
+        slidesPerView: "auto",
+        autoplay: false,
+        direction: 'horizontal',
+        grabCursor: true,
+        observer: true,
+        observeParents: true,
+        parallax: true,
+        navigation: {
+          nextEl: '.swiper-button-next',
+          prevEl: '.swiper-button-prev',
+        },
+      });
+    }
   });
 
   const handleButtonClick = async () => {
     const inputValue = inputRef.value;
     if (!inputValue) {
+      return;
+    }
+    // [修改] 确保有选定角色才能发送
+    if (!currentRole()) {
+      alert("请先选择一个对话角色");
       return;
     }
     inputRef.value = '';
@@ -108,14 +148,21 @@ export default () => {
     requestWithLatestMessage();
   };
 
+  // requestWithLatestMessage 函数基本保持不变，因为其核心功能是API请求
   const requestWithLatestMessage = async () => {
     setLoading(true);
     setCurrentAssistantMessage('');
+    const role = currentRole();
+    if (!role) {
+      setLoading(false);
+      return;
+    }
     try {
       const controller = new AbortController();
       setController(controller);
       let requestMessageList = [...messageList()];
-      if (requestMessageList.length > 0 && requestMessageList[0].role === 'assistant') {
+      // 过滤和截断逻辑保持不变...
+      if (requestMessageList[0].role == 'assistant') {
         requestMessageList = requestMessageList.slice(1);
       }
       requestMessageList = requestMessageList.filter((item) => {
@@ -124,13 +171,14 @@ export default () => {
       if (requestMessageList.length > 15) {
         requestMessageList = [...requestMessageList.slice(0, 3), ...requestMessageList.slice(-12)];
       }
+
       const timestamp = Date.now();
       const response = await fetch('/api/generate', {
         method: 'POST',
         body: JSON.stringify({
           setting: {
             ...setting(),
-            role: currentRole().role,
+            role: role.role,
           },
           messages: requestMessageList,
           time: timestamp,
@@ -162,16 +210,18 @@ export default () => {
         done = readerDone;
       }
     } catch (e) {
-      console.error(e); // 打印错误，方便调试
+      console.error(e);
       setLoading(false);
       setController(null);
-      // 可在此处添加用户友好的错误提示
-      setMessageList([...messageList(), { role: 'assistant', content: '抱歉，好像出了一点问题，请稍后再试。' }]);
+      // [新增] 出现错误时，可以显示一条错误信息
+      setCurrentAssistantMessage("阿弥陀佛，网络似乎有些波动，请稍后再试。");
+      archiveCurrentMessage();
       return;
     }
     archiveCurrentMessage();
   };
-
+  
+  // archiveCurrentMessage 函数基本保持不变
   const archiveCurrentMessage = () => {
     if (currentAssistantMessage()) {
       setMessageList([
@@ -188,20 +238,22 @@ export default () => {
     }
   };
 
-  // =====================================================================
-  // ========== 我为您升级了“清空对话”功能，现在它会真正地清空一切 ===========
+  // [修改] 重构 clear 函数，只清除当前角色的聊天记录
   const clear = () => {
+    if (!currentRole()) return; // 如果没有当前角色，则不执行任何操作
     inputRef.value = '';
     inputRef.style.height = 'auto';
-    setMessageList([]);
     setCurrentAssistantMessage('');
-    // 关键一步：同时从 localStorage 中删除此角色的永久记录！
-    if (currentRole().role) {
-      localStorage.removeItem(currentRole().role);
-    }
-  };
-  // =====================================================================
 
+    // 只保留初始欢迎语
+    const initialMessage = [{ role: 'assistant' as const, content: currentRole()!.fc }];
+    setMessageList(initialMessage);
+
+    // 从 localStorage 中也移除此角色的历史
+    saveHistory(currentRole()!.role, initialMessage);
+ };
+
+  // stopStreamFetch 函数保持不变
   const stopStreamFetch = () => {
     if (controller()) {
       controller().abort();
@@ -209,38 +261,34 @@ export default () => {
     }
   };
 
-  // =====================================================================
-  // ========== 这就是画龙点睛之笔：重写 choiceRole，增加“读取”功能 ==========
+  // [修改] 核心改造：切换角色的函数
   const choiceRole = (newRole: Role) => {
-    // 如果点击的是当前已经选中的角色，就什么都不做
-    if (currentRole().role === newRole.role) {
+    const oldRole = currentRole();
+    // 1. 如果切换到同一个角色，则什么也不做
+    if (oldRole && oldRole.role === newRole.role) {
       return;
     }
-    
+
+    // 2. 保存当前角色的历史记录 (此步骤已被 createEffect 自动处理，无需手动调用)
+
+    // 3. 设置新角色
     setCurrentRole(newRole);
 
-    // 关键一步：尝试从 localStorage 读取这个角色的历史记录
-    const savedHistory = localStorage.getItem(newRole.role);
+    // 4. 加载新角色的历史记录
+    const history = getHistory();
+    const newRoleHistory = history[newRole.role];
 
-    if (savedHistory) {
-      try {
-        const parsedHistory = JSON.parse(savedHistory);
-        setMessageList(parsedHistory);
-      } catch {
-        // 如果解析失败，说明存储的数据有问题，就按第一次处理
-        setMessageList([]);
-        setCurrentAssistantMessage(newRole.fc);
-        queueMicrotask(archiveCurrentMessage);
-      }
+    if (newRoleHistory && newRoleHistory.length > 0) {
+      setMessageList(newRoleHistory);
     } else {
-      // 如果没找到历史记录（第一次聊），就初始化欢迎语
-      setMessageList([]);
-      setCurrentAssistantMessage(newRole.fc);
-      queueMicrotask(archiveCurrentMessage);
+      // 如果没有历史记录, 显示欢迎语
+      setMessageList([{ role: 'assistant', content: newRole.fc }]);
     }
+    setCurrentAssistantMessage('');
+    inputRef.focus();
   };
-  // =====================================================================
-  
+
+  // retryLastFetch 函数保持不变
   const retryLastFetch = () => {
     if (messageList().length > 0) {
       const lastMessage = messageList()[messageList().length - 1];
@@ -251,6 +299,7 @@ export default () => {
     }
   };
 
+  // handleKeydown 函数保持不变
   const handleKeydown = (e: KeyboardEvent) => {
     if (e.isComposing || e.shiftKey) {
       return;
@@ -260,24 +309,32 @@ export default () => {
     }
   };
 
+  // exportToMarkdown 函数保持不变
   const exportToMarkdown = () => {
     const markdownLines = messageList().map(message => {
-      const roleName = message.role === 'assistant' ? currentRole().role : '善知识';
-      return `**${roleName}:** ${message.content}`;
+      // 直接判断角色名并替换
+      if (message.role === 'assistant') {
+        return `**${currentRole()?.role || 'AI'}:** ${message.content}`; // [优化] 导出时使用当前角色名
+      }
+      if (message.role === 'user') {
+        return `**善知识:** ${message.content}`;
+      }
+      // 对于其他可能的角色，保持原样
+      return `**${message.role}:** ${message.content}`;
     });
  
     const markdown = markdownLines.join('\n\n');
     const blob = new Blob([markdown], { type: 'text/markdown' });
-    
+  
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `${currentRole().role}-对话记录.md`;
+    link.download = `${currentRole()?.role || 'AI'}-对话记录.md`; // [优化] 导出的文件名也用角色名
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
-  
-  // JSX 部分保持不变
+
+  // JSX 渲染部分，仅修改了少量逻辑
   return (
     <div my-6>
       <div>
@@ -286,7 +343,8 @@ export default () => {
             <For each={roles()} fallback={<div>请深呼吸等待...</div>}>
               {(item) => (
                 <div
-                  classList={{ selected: currentRole().role === item.role }}
+                  // [修改] 判断当前角色是否选中
+                  classList={{ selected: currentRole()?.role === item.role }}
                   onClick={() => choiceRole(item)}
                   class="swiper-slide"
                   data-role={item.role}>
@@ -306,29 +364,33 @@ export default () => {
           <div class="swiper-button-next"></div>
         </div>
       </div>
-      
-      <div ref={messagesContainerRef}>
-        <Index each={messageList()}>
-          {(message, index) => (
+    
+      {/* [修改] 使用 Show 组件确保 currentRole 存在时才渲染 */}
+      <Show when={currentRole()}>
+        <div ref={messagesContainerRef}>
+          <Index each={messageList()}>
+            {(message, index) => (
+              <MessageItem
+                role={message().role}
+                message={message().content}
+                assistantAvatar={currentRole()!.avatar}
+                showRetry={() => (message().role === 'assistant' && index === messageList().length - 1 && !loading())}
+                onRetry={retryLastFetch}
+              />
+            )}
+          </Index>
+
+          {currentAssistantMessage() && (
             <MessageItem
-              role={message().role}
-              message={message().content}
-              assistantAvatar={currentRole().avatar}
-              showRetry={() => (message().role === 'assistant' && index === messageList().length - 1)}
-              onRetry={retryLastFetch}
+              role="assistant"
+              assistantAvatar={currentRole()!.avatar}
+              message={currentAssistantMessage}
             />
           )}
-        </Index>
+        </div>
+      </Show>
 
-        {currentAssistantMessage() && (
-          <MessageItem
-            role="assistant"
-            assistantAvatar={currentRole().avatar}
-            message={currentAssistantMessage}
-          />
-        )}
-      </div>
-
+      {/* ...下方按钮和输入框的JSX保持不变... */}
       <Show
         when={!loading()}
         fallback={() => (
@@ -345,7 +407,7 @@ export default () => {
           <textarea
             ref={inputRef!}
             onKeyDown={handleKeydown}
-            placeholder="点击头像开启对话"
+            placeholder={currentRole() ? '与' + currentRole()?.role + '对话...' : '请点击上方头像开启对话'}
             autocomplete="off"
             onInput={() => {
               inputRef.style.height = 'auto';
@@ -357,13 +419,10 @@ export default () => {
           <button onClick={handleButtonClick} class="h-12 px-2 py-2 bg-slate bg-op-15 rounded-lg hover:bg-slate-50 transition-all duration-200">
             <svg t="1741404073185" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="1758" width="16" height="16"><path d="M0 438.857143h1024v146.285714H0z" p-id="1759" fill="#b8976d"></path><path d="M438.857143 0h146.285714v1024H438.857143z" p-id="1760" fill="#b8976d"></path><path d="M0 0h585.142857v146.285714H0zM438.857143 877.714286h585.142857v146.285714H438.857143zM877.714286 0h146.285714v585.142857h-146.285714zM0 438.857143h146.285714v585.142857H0z" p-id="1761" fill="#b8976d"></path></svg>
           </button>
-       
-
+        
           <button title="导出Markdown" onClick={exportToMarkdown} class="h-12 px-1 py-2 bg-op-15 hover:bg-op-20 transition-all duration-200">
             <svg t="1741400278058" class="icon" viewBox="0 0 1024 1024" version="1.1" xmlns="http://www.w3.org/2000/svg" p-id="1501" width="22" height="22"><path d="M522.748775 502.326102c27.230231-31.529741 59.476557-65.925822 91.006298-99.605318 2.149755-4.29951 4.29951-12.89853 2.149756-17.198041-19.347796-50.877537-48.727782-97.455563-95.305809-131.851644-45.144857 34.396081-74.524843 80.974108-96.022393 131.851644-2.149755 4.29951 0 10.748775 2.149755 15.048286 32.246326 33.679496 65.925822 70.225332 96.022393 101.755073zM549.979006 561.802659c27.946816 65.925822 37.979006 134.0014 33.679496 210.675997 31.529741 2.149755 61.626312 4.29951 91.006299 0 6.449265 2.149755 17.198041-4.29951 21.49755-10.748775 27.946816-40.128761 55.177047-78.824353 74.524843-123.252624 31.529741-78.824353 37.979006-159.081875 10.748775-242.205738-10.748775-31.529741-12.89853-33.679496-44.428271-21.497551-83.123863 32.246326-142.60042 91.722883-184.878937 166.247725-2.149755 5.73268-4.29951 14.3317-2.149755 20.780966zM303.473758 372.624213c-29.379986-10.03219-31.529741-7.882435-42.278517 21.49755-35.829251 108.204339-15.048286 209.959412 37.979007 308.131561 8.59902 16.481456 19.347796 25.080476 40.845346 20.780966 15.048286-2.149755 31.529741 0 46.578027 2.149755 48.727782 8.59902 97.455563 19.347796 150.482855 29.379986 6.449265-55.177047-2.149755-110.354094-23.647306-163.381386-40.128761-101.755073-105.337999-177.713086-209.959412-218.558432zM807.23303 850.586424c-19.347796 4.29951-37.979006 12.89853-57.326802 21.497551-65.925822 25.080476-131.851645 44.428272-202.076977 33.679496-42.278516-6.449265-80.974108-31.529741-91.006298-61.626312 8.59902 4.29951 15.048286 6.449265 23.647306 8.59902 31.529741 6.449265 63.059482 15.048286 97.455563 17.198041 37.979006 2.149755 65.925822-19.347796 76.674598-53.027292-6.449265-2.149755-10.748775-2.149755-12.898531-2.149755-50.877537-10.748775-103.904829-21.497551-154.782365-31.529741-25.797061-6.449265-50.877537-12.89853-76.674597-17.198041-99.605318-15.048286-182.729181 23.647306-222.857943 101.755074-8.59902 12.89853-8.59902 21.497551 6.449265 29.379986 21.497551 12.89853 42.278516 27.946816 63.776067 37.979006 203.510147 108.204339 422.785164 87.423373 601.214836-57.326802 4.29951-2.149755 6.449265-6.449265 10.748775-10.748775-17.914626-20.780966-41.561931-22.930721-62.342897-16.481456zM267.644507 735.93282C225.36599 674.306508 203.868439 606.230931 195.269419 528.123163c-31.529741 4.29951-63.776067 6.449265-97.455563 10.748775-4.29951 0-10.748775 10.748775-10.748776 17.198041 8.59902 88.856543 53.027292 159.081875 116.803359 216.408677 23.647306-12.89853 42.278516-23.647306 63.776068-36.545836z" p-id="1502" fill="#b8976d"></path><path d="M860.260322 532.422673c-15.048286 0-19.347796 4.29951-21.497551 19.347796-12.89853 103.904829-59.476557 193.477957-136.151154 267.286214-6.449265 6.449265-12.89853 15.048286-19.347796 23.647306 4.29951 2.149755 6.449265 2.149755 6.449265 4.29951 112.503849-42.278516 195.627712-116.803359 231.456963-231.456963 25.797061-78.824353 27.946816-78.824353-60.909727-83.123863zM510.56683 128.985304h3.582925c5.016095-21.497551 8.59902-42.995101 12.181945-64.492652 1.43317-10.748775 5.73268-21.497551 3.582926-32.246326a61.626312 61.626312 0 0 0-15.764871-32.246326h-3.582925c-9.315605 10.748775-12.89853 21.497551-15.764871 32.246326-2.149755 10.748775 2.149755 21.497551 3.582926 32.246326 2.86634 22.214136 7.16585 43.711686 12.181945 64.492652zM267.644507 159.081875c15.764871 14.3317 32.962911 27.946816 50.160951 41.561932l2.86634-2.149755c-10.03219-20.064381-20.780966-38.695591-32.246326-57.326802-5.73268-8.59902-9.315605-20.064381-17.914625-26.513646a71.013576 71.013576 0 0 0-32.246326-15.048286l-2.86634 2.866341c0 14.3317 3.582925 25.080476 8.59902 34.396081 5.016095 9.315605 15.764871 15.048286 23.647306 22.214135zM159.440168 379.073478l0.716585-3.582925c-20.064381-8.59902-40.128761-16.481456-60.909727-22.930721C89.214836 348.976907 79.182645 343.244227 68.43387 343.244227c-11.46536 0.716585-22.214136 2.149755-34.396081 10.03219l-0.716585 2.86634c8.59902 10.748775 18.631211 16.481456 28.663401 20.780966 10.03219 4.29951 21.497551 2.149755 32.246326 2.149755 21.497551 0.716585 43.711686 0.716585 65.209237 0zM989.962211 353.276417a65.639188 65.639188 0 0 0-34.396081-9.315605c-10.748775-0.716585-20.780966 5.73268-30.813156 8.59902-20.780966 6.449265-40.845346 14.3317-60.909727 22.930721l0.716585 3.582925c22.214136 1.43317 43.711686 1.43317 65.209237 0.716585 10.748775 0 22.214136 2.149755 32.246326-2.149755s20.064381-10.03219 28.663401-20.780966l-0.716585-3.582925zM756.355493 159.081875c7.882435-7.16585 17.914626-12.89853 22.930721-22.214135a64.492652 64.492652 0 0 0 8.59902-34.396081l-2.149755-2.866341a61.626312 61.626312 0 0 0-32.246326 15.048286c-8.59902 6.449265-12.181945 17.914626-17.914625 26.513646-11.46536 18.631211-22.214136 37.262421-32.246326 57.326802l2.86634 2.149755c17.198041-13.615115 34.396081-27.230231 50.160951-41.561932z" p-id="1503" fill="#b8976d"></path></svg>
           </button>
-          
-          
         </div>
       </Show>
 
