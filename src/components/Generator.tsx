@@ -1,11 +1,10 @@
 import type { ChatMessage } from '@/types';
-import { createSignal, Index, Show, createEffect, onMount, For } from 'solid-js';
+import { createSignal, Index, Show, createEffect, onMount, For, onCleanup } from 'solid-js';
 import IconClear from './icons/Clear';
 import IconMarkdown from './icons/Markdown';
 import MessageItem from './MessageItem';
 import Setting from "./Setting";
 import _ from 'lodash';
-// 我们需要引入Swiper的核心类型
 import Swiper, { type Swiper as SwiperClass, Navigation } from 'swiper';
 import 'swiper/css';
 import { register } from 'swiper/element/bundle';
@@ -16,12 +15,11 @@ Swiper.use([Navigation]);
 export interface Role {
   role: string;
   avatar: string;
-  fc: string; // fc 代表 "First Chat" 即欢迎语
+  fc: string;
 }
 
 const CHAT_HISTORY_KEY = 'ai-buddha-chat-history';
 
-// 工具函数，保持不变，它们是坚实的基础
 const loadChatHistory = (): Record<string, ChatMessage[]> => {
   const history = localStorage.getItem(CHAT_HISTORY_KEY);
   try { return history ? JSON.parse(history) : {}; }
@@ -32,10 +30,9 @@ const saveChatHistory = (history: Record<string, ChatMessage[]>) => {
   localStorage.setItem(CHAT_HISTORY_KEY, JSON.stringify(history));
 };
 
-
 export default () => {
   let inputRef: HTMLTextAreaElement;
-  let swiperElRef: HTMLDivElement; // 用于获取Swiper容器的引用
+  let swiperElRef: HTMLDivElement;
 
   const [messageList, setMessageList] = createSignal<ChatMessage[]>([]);
   const [currentAssistantMessage, setCurrentAssistantMessage] = createSignal('');
@@ -43,12 +40,12 @@ export default () => {
   const [controller, setController] = createSignal<AbortController | null>(null);
   const [currentRole, setCurrentRole] = createSignal<Role | null>(null);
   const [roles, setRoles] = createSignal<Role[]>([]);
-  
   const [swiperInstance, setSwiperInstance] = createSignal<SwiperClass | null>(null);
 
   const defaultSetting = { openaiAPIKey: "", customRule: "", openaiAPITemperature: 70 };
   const [setting, setSetting] = createSignal({ ...defaultSetting });
 
+  // onMount现在只负责获取数据，职责单一
   onMount(async () => {
     const storage = localStorage.getItem("setting");
     try { if (storage) setSetting({ ...defaultSetting, ...JSON.parse(storage) }); }
@@ -57,29 +54,44 @@ export default () => {
     const response = await fetch('/api/generate');
     const fetchedRoles: Role[] = await response.json();
     setRoles(fetchedRoles);
-    
-    const swiper = new Swiper(swiperElRef, {
-      slidesPerView: "auto",
-      direction: 'horizontal',
-      grabCursor: true,
-      navigation: { nextEl: '.swiper-button-next', prevEl: '.swiper-button-prev' },
-      on: {
-        slideChange: (s) => {
-          const newRole = roles()[s.activeIndex];
-          if (newRole && newRole.role !== currentRole()?.role) {
-            handleRoleChange(newRole);
-          }
-        },
-      },
-    });
-    setSwiperInstance(swiper);
+  });
 
-    if (fetchedRoles.length > 0) {
+  // ===================================================================
+  // 老板，这才是最终的答案！使用 createEffect 来确保 Swiper 在 DOM 更新后才初始化！
+  // ===================================================================
+  createEffect(() => {
+    // 这个 effect 依赖于 roles()。当 roles() 从空数组变为有数据时，它会执行。
+    if (roles().length > 0 && !swiperInstance()) {
+      // 确认有角色数据，并且Swiper实例还不存在，才进行初始化
+      const swiper = new Swiper(swiperElRef, {
+        slidesPerView: "auto",
+        direction: 'horizontal',
+        grabCursor: true,
+        navigation: { nextEl: '.swiper-button-next', prevEl: '.swiper-button-prev' },
+        on: {
+          slideChange: (s) => {
+            const newRole = roles()[s.activeIndex];
+            if (newRole && newRole.role !== currentRole()?.role) {
+              handleRoleChange(newRole);
+            }
+          },
+        },
+      });
+      setSwiperInstance(swiper);
+
+      // 在 Swiper 成功初始化后，我们才安全地设置第一个角色
       const history = loadChatHistory();
-      const initialRole = fetchedRoles[0];
+      const initialRole = roles()[0];
       handleRoleChange(initialRole, history);
+
+      // 遵循最佳实践，在组件卸载或 effect 重新执行前销毁 Swiper 实例
+      onCleanup(() => {
+        swiper.destroy();
+        setSwiperInstance(null);
+      });
     }
   });
+
 
   createEffect(() => { localStorage.setItem("setting", JSON.stringify(setting())); });
 
@@ -146,7 +158,7 @@ export default () => {
       setCurrentAssistantMessage('');
       setLoading(false);
       setController(null);
-      inputRef.focus();
+      if(inputRef) inputRef.focus();
     }
   };
   
@@ -164,14 +176,15 @@ export default () => {
   };
 
   const requestWithLatestMessage = async () => {
-    if (!currentRole()) return;
+    const role = currentRole();
+    if (!role) return;
     setLoading(true);
     setCurrentAssistantMessage('');
     try {
       const controller = new AbortController();
       setController(controller);
       let requestMessageList = structuredClone(messageList());
-      const initialWelcome = (roles().find(r => r.role === currentRole()!.role))?.fc;
+      const initialWelcome = role.fc;
       if (requestMessageList.length > 0 && requestMessageList[0].role === 'assistant' && requestMessageList[0].content === initialWelcome) {
         requestMessageList.shift();
       }
@@ -183,7 +196,7 @@ export default () => {
       const response = await fetch('/api/generate', {
         method: 'POST',
         body: JSON.stringify({
-          setting: { ...setting(), role: currentRole()!.role },
+          setting: { ...setting(), role: role.role },
           messages: requestMessageList,
           time: timestamp,
         }),
@@ -216,18 +229,11 @@ export default () => {
     }
   };
 
-  const stopStreamFetch = () => {
-    if (controller()) {
-      controller()?.abort();
-      archiveCurrentMessage();
-    }
-  };
-
+  const stopStreamFetch = () => { if (controller()) { controller()?.abort(); archiveCurrentMessage(); } };
   const retryLastFetch = () => {
     const role = currentRole();
     if (messageList().length > 0 && role) {
-      const lastMessage = messageList()[messageList().length - 1];
-      if (lastMessage.role === 'assistant') {
+      if (messageList()[messageList().length - 1].role === 'assistant') {
         const newMessages = messageList().slice(0, -1);
         setMessageList(newMessages);
         saveCurrentMessages(role, newMessages);
@@ -235,15 +241,7 @@ export default () => {
       }
     }
   };
-
-  const handleKeydown = (e: KeyboardEvent) => {
-    if (e.isComposing || e.shiftKey) return;
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleButtonClick();
-    }
-  };
-
+  const handleKeydown = (e: KeyboardEvent) => { if (e.isComposing || e.shiftKey) return; if (e.key === 'Enter') { e.preventDefault(); handleButtonClick(); } };
   const exportToMarkdown = () => {
     const role = currentRole();
     if (!role || messageList().length === 0) return;
@@ -301,9 +299,6 @@ export default () => {
         )}
       </div>
 
-      {/* =================================================================== */}
-      {/* 老板，我已将这部分代码恢复到正确的、未经删改的状态 */}
-      {/* =================================================================== */}
       <Show
         when={!loading()}
         fallback={() => (
@@ -320,7 +315,7 @@ export default () => {
             onKeyDown={handleKeydown}
             placeholder={currentRole() ? `与 ${currentRole()?.role} 对话...` : "点击上方头像开启对话"}
             autocomplete="off"
-            onInput={() => { inputRef.style.height = 'auto'; inputRef.style.height = `${inputRef.scrollHeight}px`; }}
+            onInput={() => { if(inputRef) { inputRef.style.height = 'auto'; inputRef.style.height = `${inputRef.scrollHeight}px`; } }}
             rows="1"
             class="w-full px-3 py-3 min-h-12 max-h-36 rounded-sm bg-slate bg-op-15 resize-none focus:bg-op-20 focus:ring-0 focus:outline-none placeholder:op-50 dark:placeholder:op-30"
           />
@@ -337,4 +332,3 @@ export default () => {
     </div>
   );
 };
-
